@@ -216,6 +216,9 @@ export function setupMapManager({ onLibraryChanged = async () => {} } = {}) {
     const target = document.querySelector("#map-jobs");
     jobsSection.hidden = jobs.length === 0;
     if (jobs.length === 0) { target.replaceChildren(); return; }
+    // A row is rebuilt from scratch on every poll, so an open/closed log panel
+    // has to be read out of the outgoing DOM before it is replaced.
+    const openLogs = new Map([...target.querySelectorAll(".job-log-details")].map((details) => [details.dataset.jobId, details.open]));
     target.replaceChildren(...[...jobs].reverse().map((job) => {
       const row = document.createElement("article");
       row.className = "job-row";
@@ -223,14 +226,19 @@ export function setupMapManager({ onLibraryChanged = async () => {} } = {}) {
       const presentation = jobPresentation(job);
       const retry = retryAction(job);
       const steps = jobPhaseSteps(job).map(({ id: stepId, label, state: stepState }) => `<li class="job-step ${stepState}"${stepState === "current" || stepState === "failed" ? ' aria-current="step"' : ""}><span class="job-step-dot" aria-hidden="true"></span><span>${escapeHtml(label)}</span><span class="sr-only">${escapeHtml(stepState)}</span></li>`).join("");
-      row.innerHTML = `<div class="job-row-head"><div><strong>${escapeHtml(job.name ?? job.regionId)}</strong><span class="map-meta">${escapeHtml(presentation.detail)} · ${escapeHtml(presentation.elapsed)}</span></div><span class="job-state ${job.status === "failed" ? "failed" : ""}">${escapeHtml(presentation.title)}</span></div><ol class="job-steps" aria-label="Map build phases">${steps}</ol>${percent === null || percent === undefined ? "" : `<progress class="job-progress" max="100" value="${Number(percent)}">${Number(percent)}%</progress>`}${presentation.error ? `<p class="job-error"></p>` : ""}${retry ? `<div class="job-actions"><button class="small-action retry-job" type="button">${escapeHtml(retry.label)}</button></div>` : ""}`;
+      const hasLog = Boolean(job.logs?.length);
+      const logOpen = openLogs.has(job.id) ? openLogs.get(job.id) : job.status === "running";
+      row.innerHTML = `<div class="job-row-head"><div><strong>${escapeHtml(job.name ?? job.regionId)}</strong><span class="map-meta">${escapeHtml(presentation.detail)} · ${escapeHtml(presentation.elapsed)}</span></div><span class="job-state ${job.status === "failed" ? "failed" : ""}">${escapeHtml(presentation.title)}</span></div><ol class="job-steps" aria-label="Map build phases">${steps}</ol>${percent === null || percent === undefined ? "" : `<progress class="job-progress" max="100" value="${Number(percent)}">${Number(percent)}%</progress>`}${presentation.error ? `<p class="job-error"></p>` : ""}${hasLog ? `<details class="job-log-details" data-job-id="${escapeHtml(job.id)}"${logOpen ? " open" : ""}><summary>Build log (${job.logs.length})</summary><pre class="job-log"></pre></details>` : ""}${retry ? `<div class="job-actions"><button class="small-action retry-job" type="button">${escapeHtml(retry.label)}</button></div>` : ""}`;
       if (presentation.error) row.querySelector(".job-error").textContent = presentation.error;
+      if (hasLog) row.querySelector(".job-log").textContent = job.logs.map(({ line }) => line).join("\n");
       if (retry) row.querySelector(".retry-job").addEventListener("click", () => action(
         () => request(`/api/jobs/${job.id}/retry`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ buildMemory: retry.buildMemory }) }),
         "Map retry queued"
       ));
       return row;
     }));
+    // Scrolling only takes effect once the row is actually in the document.
+    for (const log of target.querySelectorAll(".job-log-details[open] .job-log")) log.scrollTop = log.scrollHeight;
   };
 
   const renderMaps = (maps) => {

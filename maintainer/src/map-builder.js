@@ -40,7 +40,7 @@ async function cancel(response) {
 }
 
 export function createMapBuilder({ dataDirectory, fetchImpl = fetch, spawnImpl = spawn }) {
-  return async function buildMap({ id, source, output, reuseSource = false, buildMemory, onProgress = () => {} }) {
+  return async function buildMap({ id, source, output, reuseSource = false, buildMemory, onProgress = () => {}, onLog = () => {} }) {
     const sources = path.join(dataDirectory, "sources");
     await mkdir(sources, { recursive: true });
     const durableSource = path.join(sources, `${id}.osm.pbf`);
@@ -100,6 +100,7 @@ export function createMapBuilder({ dataDirectory, fetchImpl = fetch, spawnImpl =
       if (!response.ok || !response.body) throw new Error(`Map source returned HTTP ${response.status}`);
       const responseBytes = Number(response.headers.get("content-length")) || null;
       const totalBytes = append ? range.total : responseBytes;
+      onLog(`[map-builder] ${id}: ${sourceMode === "resumed" ? "resuming" : "downloading"} source from ${source.url}${totalBytes ? ` (${totalBytes} bytes)` : ""}`);
       const activeMetadata = append
         ? { ...metadata, totalBytes }
         : responseMetadata(source.url, response, totalBytes);
@@ -117,9 +118,11 @@ export function createMapBuilder({ dataDirectory, fetchImpl = fetch, spawnImpl =
       if (totalBytes !== null && downloadedBytes !== totalBytes) {
         throw new Error(`Map source download ended early (${downloadedBytes} of ${totalBytes} bytes)`);
       }
+      onLog(`[map-builder] ${id}: source download complete (${downloadedBytes} bytes)`);
       await rename(download, durableSource);
       await rename(metadataFile, durableMetadataFile);
     } else if (source.url) {
+      onLog(`[map-builder] ${id}: reusing previously downloaded source`);
       onProgress({ sourceMode: "reused" });
     } else if (!source.file) {
       throw new Error("Map source is not reusable");
@@ -128,17 +131,38 @@ export function createMapBuilder({ dataDirectory, fetchImpl = fetch, spawnImpl =
     const temporaryDirectory = path.join(dataDirectory, ".map-room-work", id);
     await mkdir(temporaryDirectory, { recursive: true });
     onProgress({ phase: "building", progress: null });
+    const memory = buildMemory ?? process.env.MAP_ROOM_BUILD_MEMORY ?? "2g";
+    const planetilerArgs = [
+      "-cp", "@/app/jib-classpath-file", "com.onthegomap.planetiler.Main",
+      "--download", `--osm-path=${input}`, `--output=${output}`,
+      `--download-dir=${sources}`, `--tmpdir=${temporaryDirectory}`, "--force"
+    ];
+    onLog(`[map-builder] ${id}: starting Planetiler (heap=${memory}) java ${planetilerArgs.join(" ")}`);
+    const buildStartedAt = Date.now();
     try {
       await new Promise((resolve, reject) => {
-        const child = spawnImpl("/opt/java/openjdk/bin/java", [
-          "-cp", "@/app/jib-classpath-file", "com.onthegomap.planetiler.Main",
-          "--download", `--osm-path=${input}`, `--output=${output}`,
-          `--download-dir=${sources}`, `--tmpdir=${temporaryDirectory}`, "--force"
-        ], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, JAVA_TOOL_OPTIONS: `-Xmx${buildMemory ?? process.env.MAP_ROOM_BUILD_MEMORY ?? "2g"}` } });
+        const child = spawnImpl("/opt/java/openjdk/bin/java", planetilerArgs,
+          { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, JAVA_TOOL_OPTIONS: `-Xmx${memory}` } });
         let errorText = "";
-        child.stderr.on("data", (chunk) => { errorText = `${errorText}${chunk}`.slice(-4000); });
+        const forward = (chunk) => {
+          errorText = `${errorText}${chunk}`.slice(-4000);
+          for (const line of chunk.toString("utf8").split("\n")) {
+            if (line.trim() !== "") onLog(`[planetiler:${id}] ${line}`);
+          }
+        };
+        child.stdout.on("data", forward);
+        child.stderr.on("data", forward);
         child.once("error", reject);
-        child.once("exit", (code) => code === 0 ? resolve() : reject(new Error(`Planetiler failed (${code}): ${errorText.trim()}`)));
+        child.once("exit", (code) => {
+          const elapsedSeconds = ((Date.now() - buildStartedAt) / 1000).toFixed(1);
+          if (code === 0) {
+            onLog(`[map-builder] ${id}: Planetiler finished in ${elapsedSeconds}s`);
+            resolve();
+          } else {
+            onLog(`[map-builder] ${id}: Planetiler exited with code ${code} after ${elapsedSeconds}s`);
+            reject(new Error(`Planetiler failed (${code}): ${errorText.trim()}`));
+          }
+        });
       });
     } finally {
       await rm(temporaryDirectory, { recursive: true, force: true });

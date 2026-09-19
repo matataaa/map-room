@@ -63,7 +63,7 @@ export class MapLibrary {
     return maps;
   }
 
-  async create({ id, name, source, reuseSource, buildMemory, onProgress }) {
+  async create({ id, name, source, reuseSource, buildMemory, onProgress, onLog = () => {} }) {
     ({ id, name } = validateMapIdentity(id, name));
     await mkdir(this.regionsDirectory, { recursive: true });
     const manifestPath = this.#manifestPath(id);
@@ -72,14 +72,16 @@ export class MapLibrary {
     const token = randomUUID();
     const stagingArchive = path.join(this.dataDirectory, `.${id}-${token}.mbtiles`);
     const stagingManifest = path.join(this.regionsDirectory, `.${id}-${token}.json`);
+    onLog(`[map-library] create ${id}: building into ${stagingArchive}`);
     try {
-      await this.buildMap({ id, name, source, output: stagingArchive, reuseSource, buildMemory, onProgress });
+      await this.buildMap({ id, name, source, output: stagingArchive, reuseSource, buildMemory, onProgress, onLog });
+      onLog(`[map-library] create ${id}: build complete, inspecting archive`);
       onProgress?.({ phase: "configuring", progress: null });
       const inspected = await this.inspectArchive({ name, archive: stagingArchive });
       const manifest = { ...inspected, archive: `${id}.mbtiles`, source };
       await writeFile(stagingManifest, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
       onProgress?.({ phase: "activating", progress: null });
-      await this.#activate({ archivePath, manifestPath, stagingArchive, stagingManifest });
+      await this.#activate({ archivePath, manifestPath, stagingArchive, stagingManifest, onLog });
       return publicMap(id, manifest);
     } finally {
       await rm(stagingArchive, { force: true });
@@ -96,10 +98,10 @@ export class MapLibrary {
     return publicMap(id, updated);
   }
 
-  async rebuild(id, { reuseSource, buildMemory, onProgress } = {}) {
+  async rebuild(id, { reuseSource, buildMemory, onProgress, onLog = () => {} } = {}) {
     const { manifest } = await this.#load(id);
     if (!manifest.source?.url && !manifest.source?.catalogId && !manifest.source?.file) throw clientError(`Map '${id}' does not have a reusable source`);
-    return this.#replace(id, manifest, { reuseSource, buildMemory, onProgress });
+    return this.#replace(id, manifest, { reuseSource, buildMemory, onProgress, onLog });
   }
 
   async delete(id, { confirmation }) {
@@ -136,12 +138,14 @@ export class MapLibrary {
     }
   }
 
-  async #replace(id, manifest, { reuseSource, buildMemory, onProgress }) {
+  async #replace(id, manifest, { reuseSource, buildMemory, onProgress, onLog = () => {} }) {
     const token = randomUUID();
     const archivePath = path.join(this.dataDirectory, manifest.archive);
     const stagingArchive = path.join(this.dataDirectory, `.${id}-${token}.mbtiles`);
+    onLog(`[map-library] rebuild ${id}: building into ${stagingArchive}`);
     try {
-      await this.buildMap({ id, name: manifest.region, source: manifest.source, output: stagingArchive, reuseSource, buildMemory, onProgress });
+      await this.buildMap({ id, name: manifest.region, source: manifest.source, output: stagingArchive, reuseSource, buildMemory, onProgress, onLog });
+      onLog(`[map-library] rebuild ${id}: build complete, inspecting archive`);
       onProgress?.({ phase: "configuring", progress: null });
       const inspected = await this.inspectArchive({ name: manifest.region, archive: stagingArchive });
       const updated = { ...inspected, archive: manifest.archive, source: manifest.source };
@@ -149,14 +153,14 @@ export class MapLibrary {
       const stagingManifest = `${manifestPath}.${token}.tmp`;
       await writeFile(stagingManifest, `${JSON.stringify(updated, null, 2)}\n`, "utf8");
       onProgress?.({ phase: "activating", progress: null });
-      await this.#activate({ archivePath, manifestPath, stagingArchive, stagingManifest });
+      await this.#activate({ archivePath, manifestPath, stagingArchive, stagingManifest, onLog });
       return publicMap(id, updated);
     } finally {
       await rm(stagingArchive, { force: true });
     }
   }
 
-  async #activate({ archivePath = null, manifestPath, stagingArchive = null, stagingManifest }) {
+  async #activate({ archivePath = null, manifestPath, stagingArchive = null, stagingManifest, onLog = () => {} }) {
     const token = randomUUID();
     const backupArchive = archivePath ? `${archivePath}.${token}.rollback` : null;
     const backupManifest = `${manifestPath}.${token}.rollback`;
@@ -164,13 +168,16 @@ export class MapLibrary {
     const hadManifest = await access(manifestPath).then(() => true, () => false);
     if (hadArchive) await rename(archivePath, backupArchive);
     if (hadManifest) await rename(manifestPath, backupManifest);
+    onLog(`[map-library] activating ${path.basename(manifestPath)}: staging archive -> ${archivePath ?? "(no archive change)"}, restarting tile service`);
     try {
       if (stagingArchive) await rename(stagingArchive, archivePath);
       await rename(stagingManifest, manifestPath);
       await this.applyRuntime();
       if (backupArchive) await rm(backupArchive, { force: true });
       await rm(backupManifest, { force: true });
+      onLog(`[map-library] activated ${path.basename(manifestPath)}`);
     } catch (error) {
+      onLog(`[map-library] activation failed for ${path.basename(manifestPath)}: ${error.message}; rolling back`);
       if (archivePath) await rm(archivePath, { force: true });
       await rm(manifestPath, { force: true });
       if (hadArchive) await rename(backupArchive, archivePath);

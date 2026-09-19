@@ -230,6 +230,9 @@ button { font: inherit; }
 .job-step.failed .job-step-dot { border-color: #b8564d; background: #b8564d; }
 @keyframes job-step-pulse { 0% { box-shadow: 0 0 0 3px white, 0 0 0 3px rgba(82,124,112,.35); } 70%, 100% { box-shadow: 0 0 0 3px white, 0 0 0 9px rgba(82,124,112,0); } }
 .job-error { margin: 8px 0 0; color: #8a342d; font-size: 10px; }
+.job-log-details { margin-top: 8px; }
+.job-log-details summary { cursor: pointer; color: var(--muted); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; }
+.job-log { max-height: 160px; margin: 6px 0 0; padding: 8px 9px; overflow-y: auto; border-radius: 8px; background: #16211d; color: #cfe3da; font: 10px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; word-break: break-word; }
 .job-actions { display: flex; justify-content: flex-end; margin-top: 8px; }
 .manager-status { min-height: 20px; margin: 0 22px 20px; color: #315e54; font-size: 11px; }
 .manager-status.create-status { min-height: 0; margin: 10px 0 0; }
